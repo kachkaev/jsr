@@ -25,6 +25,7 @@ export function DocsView(
 
       {docs.breadcrumbs && (
         <BreadcrumbsSticky
+          searchContent={!docs.toc ? docs.main : undefined}
           content={docs.breadcrumbs}
           scope={params.scope}
           package={params.package}

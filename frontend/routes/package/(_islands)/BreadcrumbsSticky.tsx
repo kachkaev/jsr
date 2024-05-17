@@ -1,10 +1,11 @@
 // Copyright 2024 the JSR authors. All rights reserved. MIT license.
-import { Signal, useSignal } from "@preact/signals";
+import { useSignal } from "@preact/signals";
 import { useEffect, useRef } from "preact/hooks";
 import { LocalSymbolSearch } from "./LocalSymbolSearch.tsx";
 
 export interface BreadcrumbsStickyProps {
   content: string;
+  searchContent?: string;
   scope: string;
   package: string;
   version: string;
@@ -52,6 +53,7 @@ export function BreadcrumbsSticky(
 
         <div class="lg:col-[span_1_/_-1]">
           <LocalSymbolSearch
+            content={props.searchContent}
             scope={props.scope}
             pkg={props.package}
             version={props.version}

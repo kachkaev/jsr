@@ -1038,9 +1038,7 @@ pub async fn get_docs_handler(
   err,
   fields(scope, package, version, all_symbols, entrypoint, symbol)
 )]
-pub async fn get_docs_search_handler(
-  req: Request<Body>,
-) -> ApiResult<serde_json::Value> {
+pub async fn get_docs_search_handler(req: Request<Body>) -> ApiResult<String> {
   let scope = req.param_scope()?;
   let package_name = req.param_package()?;
   let version_or_latest = req.param_version_or_latest()?;
@@ -1084,22 +1082,31 @@ pub async fn get_docs_search_handler(
 
   let registry_url = req.data::<RegistryUrl>().unwrap().0.to_string();
 
-  let ctx = crate::docs::get_generate_ctx(
+  let docs = crate::docs::generate_docs_html(
     doc_nodes,
     docs_info.main_entrypoint,
     docs_info.rewrite_map,
+    DocsRequest::AllSymbols,
     scope.clone(),
     package_name.clone(),
     version.version.clone(),
     version_or_latest == VersionOrLatest::Latest,
-    false,
+    None,
     package.runtime_compat,
     registry_url,
-  );
+  )
+  .map_err(|e| {
+    error!("failed to generate docs: {}", e);
+    ApiError::InternalServerError
+  })?
+  .unwrap();
 
-  let search_index = deno_doc::html::generate_search_index(&ctx);
+  let search = match docs {
+    GeneratedDocsOutput::Docs(docs) => docs.main,
+    GeneratedDocsOutput::Redirect(_) => unreachable!(),
+  };
 
-  Ok(search_index)
+  Ok(search)
 }
 
 #[instrument(

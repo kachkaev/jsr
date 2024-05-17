@@ -16,6 +16,7 @@ export interface LocalSymbolSearchProps {
   scope: string;
   pkg: string;
   version: string;
+  content?: string;
 }
 
 interface SearchRecord {
@@ -40,6 +41,7 @@ export function LocalSymbolSearch(
   const db = useSignal<undefined | Orama<any>>(undefined);
   const results = useSignal<SearchRecord[]>([]);
   const selectionIdx = useSignal(-1);
+  const parsedSearchContent = useSignal<Document | null>(null);
   const macLike = useMacLike();
 
   useEffect(() => {
@@ -51,13 +53,6 @@ export function LocalSymbolSearch(
           return create({
             schema: {
               name: "string",
-              kind: "enum[]",
-              file: "string",
-              location: {
-                filename: "string",
-                line: "number",
-                col: "number",
-              },
             },
             components: {
               tokenizer: {
@@ -77,20 +72,38 @@ export function LocalSymbolSearch(
             },
           });
         })(),
-        api.get<{ nodes: SearchRecord[] }>(
+        !props.content ? api.get<{ nodes: SearchRecord[] }>(
           path`/scopes/${props.scope}/packages/${props.pkg}/versions/${
             props.version || "latest"
           }/docs/search`,
-        ),
+        ) : undefined,
       ]);
 
-      if (searchResp.ok) {
-        // deno-lint-ignore no-explicit-any
-        await insertMultiple(oramaDb, searchResp.data.nodes as any);
-        db.value = oramaDb;
+      let searchContent;
+      if (searchResp) {
+        if (searchResp.ok) {
+          searchContent = searchResp.data;
+        } else {
+          console.error(searchResp);
+          return;
+        }
       } else {
-        console.error(searchResp);
+        searchContent = props.content;
       }
+
+      const parser = new DOMParser();
+      const searchDocument = parser.parseFromString(searchContent, "text/html");
+      parsedSearchContent.value = searchDocument;
+
+      const searchItems = [];
+      for (const searchItem of searchDocument.getElementsByClassName("namespaceItem")) {
+        searchItems.push({
+          name: searchItem.dataset.name,
+        });
+      }
+
+      await insertMultiple(oramaDb, searchItems);
+      db.value = oramaDb;
     })();
   }, []);
 
@@ -128,6 +141,19 @@ export function LocalSymbolSearch(
         threshold: 0.4,
       });
       selectionIdx.value = -1;
+
+      let results: string[] = searchResult.hits.map((hit) => hit.document.name);
+
+      const doc = parsedSearchContent.value;
+      for (const searchItem of doc.getElementsByClassName("namespaceItem")) {
+        if (results.includes(searchItem.dataset.name)) {
+          searchItem.style.removeProperty("display");
+        } else {
+          searchItem.style.setProperty("display", "none");
+        }
+      }
+      parsedSearchContent.value = doc;
+
       results.value = searchResult.hits.map((hit) =>
         // deno-lint-ignore no-explicit-any
         hit.document as any as SearchRecord
@@ -158,6 +184,7 @@ export function LocalSymbolSearch(
     }
   }
 
+  console.log(parsedSearchContent.value?.documentElement?.innerHTML);
   const placeholder = `Search for symbols in @${props.scope}/${props.pkg}${
     macLike !== undefined ? ` (${macLike ? "⌘/" : "Ctrl+/"})` : ""
   }`;
@@ -172,96 +199,9 @@ export function LocalSymbolSearch(
         onInput={onInput}
         onKeyUp={onKeyUp}
       />
-      <div role="listbox" tabindex={0} class="relative">
-        {!(!showResults.value || results.value.length == 0) && (
-          <ResultList
-            results={results}
-            searchProps={props}
-            selectionIdx={selectionIdx}
-          />
-        )}
+      <div tabindex={0} class="relative w-[80vw] bg-red-100 right-[calc(80vw_-_250px)] max-h-screen">
+        {showResults.value && <div class="ddoc" dangerouslySetInnerHTML={{ __html: parsedSearchContent.value?.documentElement?.innerHTML }}></div>}
       </div>
     </div>
   );
-}
-
-function ResultList(
-  { results, searchProps, selectionIdx }: {
-    results: Signal<SearchRecord[]>;
-    searchProps: LocalSymbolSearchProps;
-    selectionIdx: Signal<number>;
-  },
-) {
-  return (
-    <div class="absolute md:right-0 bg-white min-w-full border sibling:bg-red-500 shadow z-40">
-      <ul class="divide-y-1">
-        {results.value.map((result, i) => {
-          const selected = computed(() => selectionIdx.value === i);
-          return (
-            <li
-              key={result.file + result.kind + result.name}
-              class="hover:bg-gray-100 cursor-pointer aria-[selected=true]:bg-cyan-100"
-              aria-selected={selected}
-            >
-              <a
-                href={`/@${searchProps.scope}/${searchProps.pkg}${
-                  searchProps.version ? `@${searchProps.version}` : ""
-                }/doc${
-                  result.file === "." ? "" : result.file
-                }/~/${result.name}`}
-                class="flex gap-4 items-center justify-between py-2 px-3"
-              >
-                <div class="flex items-center gap-2.5 ddoc">
-                  <div class="flex justify-end compound_types w-[2.125rem] shrink-0">
-                    {result.kind.map((kind) => {
-                      const [rustKind, title, symbol] =
-                        docNodeKindToStringVariants(kind);
-
-                      return (
-                        <div
-                          class={`text-${rustKind} bg-${rustKind}/15 rounded-full size-5 font-medium text-xs leading-5 text-center align-middle shrink-0 select-none font-mono`}
-                          title={title}
-                        >
-                          {symbol}
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <span class="text-sm leading-none">
-                    {result.name}
-                  </span>
-                </div>
-
-                <div class="text-xs italic text-stone-400 px-0.5 overflow-hidden whitespace-nowrap text-ellipsis">
-                  {result.location.filename}
-                </div>
-              </a>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
-
-function docNodeKindToStringVariants(kind: string) {
-  switch (kind) {
-    case "function":
-      return ["Function", "Function", "f"];
-    case "variable":
-      return ["Variable", "Variable", "v"];
-    case "class":
-      return ["Class", "Class", "c"];
-    case "enum":
-      return ["Enum", "Enum", "E"];
-    case "interface":
-      return ["Interface", "Interface", "I"];
-    case "typeAlias":
-      return ["TypeAlias", "Type Alias", "T"];
-    case "namespace":
-      return ["Namespace", "Namespace", "N"];
-    default:
-      return [];
-  }
 }
