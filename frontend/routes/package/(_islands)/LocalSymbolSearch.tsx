@@ -92,7 +92,7 @@ export function LocalSymbolSearch(
       db.value = oramaDb;
     })();
   }, []);
-  const showResults = useSignal(true);
+  const showResults = useSignal(false);
 
   useEffect(() => {
     const keyboardHandler = (e: KeyboardEvent) => {
