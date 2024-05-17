@@ -20,21 +20,6 @@ export interface LocalSymbolSearchProps {
   content?: string;
 }
 
-interface SearchRecord {
-  name: string;
-  kind: (
-    | "class"
-    | "enum"
-    | "function"
-    | "interface"
-    | "namespace"
-    | "typeAlias"
-    | "variable"
-  )[];
-  file: string;
-  location: { filename: string; line: number; col: number };
-}
-
 export function LocalSymbolSearch(
   props: LocalSymbolSearchProps,
 ) {
@@ -73,7 +58,7 @@ export function LocalSymbolSearch(
             },
           });
         })(),
-        !props.content ? api.get<{ nodes: SearchRecord[] }>(
+        !props.content ? api.get<string>(
           path`/scopes/${props.scope}/packages/${props.pkg}/versions/${
             props.version || "latest"
           }/docs/search`,
@@ -135,11 +120,23 @@ export function LocalSymbolSearch(
       let results: string[] = searchResult.hits.map((hit) => hit.document.name);
 
       const doc = parsedSearchContent.value;
-      for (const searchItem of doc.getElementsByClassName("namespaceItem")) {
-        if (results.includes(searchItem.dataset.name)) {
-          searchItem.style.removeProperty("display");
+      for (const entrypoints of doc.getElementsByClassName("section")) {
+        const items = entrypoints.getElementsByClassName("namespaceItem");
+
+        let hiddenItems = 0;
+        for (const searchItem of entrypoints.getElementsByClassName("namespaceItem")) {
+          if (results.includes(searchItem.dataset.name)) {
+            searchItem.style.removeProperty("display");
+          } else {
+            hiddenItems++;
+            searchItem.style.setProperty("display", "none");
+          }
+        }
+
+        if (hiddenItems == items.length) {
+          entrypoints.style.setProperty("display", "none");
         } else {
-          searchItem.style.setProperty("display", "none");
+          entrypoints.style.removeProperty("display");
         }
       }
       parsedSearchContent.value = doc;
