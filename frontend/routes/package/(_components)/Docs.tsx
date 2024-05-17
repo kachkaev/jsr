@@ -39,7 +39,8 @@ export function DocsView(
             docs.toc ? "lg:col-span-3 lg:row-start-1" : "col-span-full"
           }`}
         >
-          <div class="ddoc" dangerouslySetInnerHTML={{ __html: docs.main }} />
+          <div class="ddoc" id="docMain" dangerouslySetInnerHTML={{ __html: docs.main }} />
+          <div class="ddoc hidden" id="docSearchResults" />
 
           {showProvenanceBadge && selectedVersion.rekorLogId && (
             <div class="mt-8 mb-8 border-2 border-jsr-cyan-500 max-w-xl rounded-md py-4 px-6">

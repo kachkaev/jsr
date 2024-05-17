@@ -2,6 +2,7 @@
 import { JSX } from "preact";
 import { computed, Signal, useSignal } from "@preact/signals";
 import { useEffect, useRef, useState } from "preact/hooks";
+import { IS_BROWSER } from "$fresh/runtime.ts";
 import {
   components,
   create,
@@ -39,10 +40,10 @@ export function LocalSymbolSearch(
 ) {
   // deno-lint-ignore no-explicit-any
   const db = useSignal<undefined | Orama<any>>(undefined);
-  const results = useSignal<SearchRecord[]>([]);
   const selectionIdx = useSignal(-1);
   const parsedSearchContent = useSignal<Document | null>(null);
   const macLike = useMacLike();
+  const searchCounter = useSignal(0);
 
   useEffect(() => {
     (async () => {
@@ -106,18 +107,7 @@ export function LocalSymbolSearch(
       db.value = oramaDb;
     })();
   }, []);
-
-  const ref = useRef<HTMLDivElement>(null);
   const showResults = useSignal(true);
-  useEffect(() => {
-    const outsideClick = (e: Event) => {
-      if (!ref.current) return;
-      showResults.value = ref.current.contains(e.target as Element);
-    };
-
-    document.addEventListener("click", outsideClick);
-    return () => document.removeEventListener("click", outsideClick);
-  }, []);
 
   useEffect(() => {
     const keyboardHandler = (e: KeyboardEvent) => {
@@ -153,18 +143,15 @@ export function LocalSymbolSearch(
         }
       }
       parsedSearchContent.value = doc;
-
-      results.value = searchResult.hits.map((hit) =>
-        // deno-lint-ignore no-explicit-any
-        hit.document as any as SearchRecord
-      );
+      searchCounter.value++;
+      showResults.value = true;
     } else {
-      results.value = [];
+      showResults.value = false;
     }
   }
 
   function onKeyUp(e: KeyboardEvent) {
-    if (e.key === "ArrowDown") {
+    /*if (e.key === "ArrowDown") {
       selectionIdx.value = Math.min(
         results.value.length - 1,
         selectionIdx.value + 1,
@@ -173,7 +160,6 @@ export function LocalSymbolSearch(
       selectionIdx.value = Math.max(0, selectionIdx.value - 1);
     } else if (e.key === "Enter") {
       if (selectionIdx.value > -1) {
-        const item = results.value[selectionIdx.value];
         if (item !== undefined) {
           e.preventDefault();
           location.href = `/@${props.scope}/${props.pkg}${
@@ -181,15 +167,32 @@ export function LocalSymbolSearch(
           }/doc${item.file === "." ? "" : item.file}/~/${item.name}`;
         }
       }
+    }*/
+  }
+
+  if (IS_BROWSER) {
+    if (showResults.value) {
+      const value = parsedSearchContent.value?.documentElement?.innerHTML ?? props.content;
+
+      if (value) {
+        document.getElementById("docMain").classList.add("hidden");
+        document.getElementById("docSearchResults").classList.remove("hidden");
+        document.getElementById("docSearchResults").innerHTML = parsedSearchContent.value?.documentElement?.innerHTML ?? props.content;
+      } else {
+        document.getElementById("docMain").classList.remove("hidden");
+        document.getElementById("docSearchResults").classList.add("hidden");
+      }
+    } else {
+      document.getElementById("docMain").classList.remove("hidden");
+      document.getElementById("docSearchResults").classList.add("hidden");
     }
   }
 
-  console.log(parsedSearchContent.value?.documentElement?.innerHTML);
   const placeholder = `Search for symbols in @${props.scope}/${props.pkg}${
     macLike !== undefined ? ` (${macLike ? "⌘/" : "Ctrl+/"})` : ""
   }`;
   return (
-    <div class="flex-none" ref={ref}>
+    <div class="flex-none" name={searchCounter.value}>
       <input
         type="text"
         placeholder={placeholder}
@@ -199,9 +202,6 @@ export function LocalSymbolSearch(
         onInput={onInput}
         onKeyUp={onKeyUp}
       />
-      <div tabindex={0} class="relative w-[80vw] bg-red-100 right-[calc(80vw_-_250px)] max-h-screen">
-        {showResults.value && <div class="ddoc" dangerouslySetInnerHTML={{ __html: parsedSearchContent.value?.documentElement?.innerHTML }}></div>}
-      </div>
     </div>
   );
 }
