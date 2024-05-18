@@ -147,30 +147,45 @@ export function LocalSymbolSearch(
                 let currentPosition = 0;
                 while (walker.nextNode() && positions.length) {
                   const textContent = walker.currentNode.textContent;
-                  const position = positions[0];
 
-                  const computedStart = position.start - currentPosition;
-                  const computedEnd = position.end - currentPosition;
-
-                  // whole highlight is in a single node
-                  // TODO: highlight when position spans across different nodes
-                  if (computedStart > 0 && computedEnd < textContent.length) {
-                    const before = textContent.slice(0, computedStart);
-                    const highlightedSection = textContent.slice(computedStart, computedEnd + 1);
-                    const after = textContent.slice(computedEnd + 1);
-
-                    walker.currentNode.replaceWith(document.createRange().createContextualFragment(`${before}<mark class="orama-highlight">${highlightedSection}</mark>${after}`));
-
-                    positions.shift();
+                  for (const position of positions) {
+                    const computedStart = position.start - currentPosition;
+                    const computedEnd = position.end - currentPosition;
                     currentPosition += textContent.length;
+
+                    // whole highlight is in a single node
+                    if (computedStart > 0 && computedEnd < textContent.length) {
+                      const before = textContent.slice(0, computedStart);
+                      const highlightedSection = textContent.slice(computedStart, computedEnd + 1);
+                      const after = textContent.slice(computedEnd + 1);
+
+                      walker.currentNode.replaceWith(document.createRange().createContextualFragment(`${before}<mark class="orama-highlight">${highlightedSection}</mark>${after}`));
+
+                      positions.shift();
+                    } else if (computedStart > 0) {
+                      // only start is in this node
+                      const before = textContent.slice(0, computedStart);
+                      const highlightedSection = textContent.slice(computedStart);
+                      walker.currentNode.replaceWith(document.createRange().createContextualFragment(`${before}<mark class="orama-highlight">${highlightedSection}</mark>`));
+
+                      // since only the start of the highlight is in this node, there cannot be more highlights for this node
+                      break;
+                    } else if (computedEnd < textContent.length) {
+                      // only end is in this node
+                      const highlightedSection = textContent.slice(0, computedEnd + 1);
+                      const after = textContent.slice(computedEnd + 1);
+                      walker.currentNode.replaceWith(document.createRange().createContextualFragment(`<mark class="orama-highlight">${highlightedSection}</mark>${after}`));
+
+                      positions.shift();
+                    } else {
+                      break;
+                    }
                   }
                 }
               }
             }
           } else {
             hiddenItems++;
-
-            titleElement.innerHTML = titleElement.title;
             searchItem.style.setProperty("display", "none");
           }
         }
