@@ -10,6 +10,7 @@ import {
   type Orama,
   search,
 } from "@orama/orama";
+import { Highlight } from "@orama/highlight";
 import { api, path } from "../../../utils/api.ts";
 import { useMacLike } from "../../../utils/os.ts";
 
@@ -29,6 +30,7 @@ export function LocalSymbolSearch(
   const parsedSearchContent = useSignal<Document | null>(null);
   const macLike = useMacLike();
   const searchCounter = useSignal(0);
+  const highlighter = new Highlight();
 
   useEffect(() => {
     (async () => {
@@ -39,6 +41,7 @@ export function LocalSymbolSearch(
           return create({
             schema: {
               name: "string",
+              description: "string",
             },
             components: {
               tokenizer: {
@@ -65,7 +68,7 @@ export function LocalSymbolSearch(
         ) : undefined,
       ]);
 
-      let searchContent;
+      let searchContent: string;
       if (searchResp) {
         if (searchResp.ok) {
           searchContent = searchResp.data;
@@ -83,8 +86,11 @@ export function LocalSymbolSearch(
 
       const searchItems = [];
       for (const searchItem of searchDocument.getElementsByClassName("namespaceItem")) {
+        const description = searchItem.getElementsByClassName("markdown_summary")[0];
         searchItems.push({
           name: searchItem.dataset.name,
+          description: description?.innerText ?? "",
+          HTMLDescription: description?.innerHTML ?? "",
         });
       }
 
@@ -110,14 +116,13 @@ export function LocalSymbolSearch(
 
   async function onInput(e: JSX.TargetedEvent<HTMLInputElement>) {
     if (e.currentTarget.value) {
+      const term = e.currentTarget.value;
       const searchResult = await search(db.value!, {
-        term: e.currentTarget.value,
-        properties: ["name"],
+        term,
+        properties: ["name", "description"],
         threshold: 0.4,
       });
       selectionIdx.value = -1;
-
-      let results: string[] = searchResult.hits.map((hit) => hit.document.name);
 
       const doc = parsedSearchContent.value;
       for (const entrypoints of doc.getElementsByClassName("section")) {
@@ -125,10 +130,47 @@ export function LocalSymbolSearch(
 
         let hiddenItems = 0;
         for (const searchItem of entrypoints.getElementsByClassName("namespaceItem")) {
-          if (results.includes(searchItem.dataset.name)) {
+          const titleElement = searchItem.getElementsByClassName("namespaceItemContent")[0].children[0];
+          const description = searchItem.getElementsByClassName("markdown_summary")[0];
+          const result = searchResult.hits.find(hit => hit.document.name == titleElement.title);
+
+          if (result) {
             searchItem.style.removeProperty("display");
+            titleElement.innerHTML = highlighter.highlight(titleElement.title, term).HTML;
+
+            if (description) {
+              const positions = highlighter.highlight(result.document.description, term).positions;
+              description.innerHTML = result.document.HTMLDescription;
+
+              if (positions.length) {
+                const walker = doc.createTreeWalker(description, NodeFilter.SHOW_TEXT);
+                let currentPosition = 0;
+                while (walker.nextNode() && positions.length) {
+                  const textContent = walker.currentNode.textContent;
+                  const position = positions[0];
+
+                  const computedStart = position.start - currentPosition;
+                  const computedEnd = position.end - currentPosition;
+
+                  // whole highlight is in a single node
+                  // TODO: highlight when position spans across different nodes
+                  if (computedStart > 0 && computedEnd < textContent.length) {
+                    const before = textContent.slice(0, computedStart);
+                    const highlightedSection = textContent.slice(computedStart, computedEnd + 1);
+                    const after = textContent.slice(computedEnd + 1);
+
+                    walker.currentNode.replaceWith(document.createRange().createContextualFragment(`${before}<mark class="orama-highlight">${highlightedSection}</mark>${after}`));
+
+                    positions.shift();
+                    currentPosition += textContent.length;
+                  }
+                }
+              }
+            }
           } else {
             hiddenItems++;
+
+            titleElement.innerHTML = titleElement.title;
             searchItem.style.setProperty("display", "none");
           }
         }
@@ -174,7 +216,7 @@ export function LocalSymbolSearch(
       if (value) {
         document.getElementById("docMain").classList.add("hidden");
         document.getElementById("docSearchResults").classList.remove("hidden");
-        document.getElementById("docSearchResults").innerHTML = parsedSearchContent.value?.documentElement?.innerHTML ?? props.content;
+        document.getElementById("docSearchResults").innerHTML = value;
       } else {
         document.getElementById("docMain").classList.remove("hidden");
         document.getElementById("docSearchResults").classList.add("hidden");
