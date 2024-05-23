@@ -1,7 +1,7 @@
 // Copyright 2024 the JSR authors. All rights reserved. MIT license.
 import { JSX } from "preact";
-import { computed, Signal, useSignal } from "@preact/signals";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useSignal } from "@preact/signals";
+import { useEffect, useRef } from "preact/hooks";
 import { IS_BROWSER } from "$fresh/runtime.ts";
 import {
   components,
@@ -21,84 +21,106 @@ export interface LocalSymbolSearchProps {
   content?: string;
 }
 
+interface SearchItem {
+  name: string;
+  description: string;
+  node: HTMLElement;
+  section: HTMLElement;
+}
+
+// deno-lint-ignore no-explicit-any
+async function createOrama(): Promise<Orama<any>> {
+  const tokenizer = await components.tokenizer.createTokenizer();
+
+  return create({
+    schema: {
+      name: "string",
+      description: "string",
+    },
+    components: {
+      tokenizer: {
+        language: "english",
+        normalizationCache: new Map(),
+        tokenize(
+          raw: string,
+          lang: string | undefined,
+          prop: string | undefined,
+        ) {
+          if (prop === "name") {
+            const tokens = raw.split(/(?=[A-Z])/).map((s) => s.toLowerCase());
+            tokens.push(raw.toLowerCase());
+            return tokens;
+          }
+          return tokenizer.tokenize(raw, lang, prop);
+        },
+      },
+    },
+  });
+}
+
+const highlighter = new Highlight();
+
 export function LocalSymbolSearch(
   props: LocalSymbolSearchProps,
 ) {
   // deno-lint-ignore no-explicit-any
   const db = useSignal<undefined | Orama<any>>(undefined);
-  const selectionIdx = useSignal(-1);
-  const parsedSearchContent = useSignal<Document | null>(null);
+  const showResults = useSignal(false);
   const macLike = useMacLike();
   const searchCounter = useSignal(0);
-  const highlighter = new Highlight();
 
   useEffect(() => {
     (async () => {
       const [oramaDb, searchResp] = await Promise.all([
-        (async () => {
-          const tokenizer = await components.tokenizer.createTokenizer();
-
-          return create({
-            schema: {
-              name: "string",
-              description: "string",
-            },
-            components: {
-              tokenizer: {
-                language: "english",
-                normalizationCache: new Map(),
-                tokenize(
-                  raw: string,
-                  lang: string | undefined,
-                  prop: string | undefined,
-                ) {
-                  if (prop === "name") {
-                    return raw.split(/(?=[A-Z])/).map((s) => s.toLowerCase());
-                  }
-                  return tokenizer.tokenize(raw, lang, prop);
-                },
-              },
-            },
-          });
-        })(),
-        !props.content ? api.get<string>(
-          path`/scopes/${props.scope}/packages/${props.pkg}/versions/${
-            props.version || "latest"
-          }/docs/search`,
-        ) : undefined,
+        createOrama(),
+        !props.content
+          ? api.get<string>(
+            path`/scopes/${props.scope}/packages/${props.pkg}/versions/${
+              props.version || "latest"
+            }/docs/search`,
+          )
+          : Promise.resolve({ ok: true, data: props.content }),
       ]);
 
       let searchContent: string;
-      if (searchResp) {
-        if (searchResp.ok) {
-          searchContent = searchResp.data;
-        } else {
-          console.error(searchResp);
-          return;
-        }
+      if (searchResp.ok) {
+        searchContent = searchResp.data;
       } else {
-        searchContent = props.content;
+        console.error(searchResp);
+        return;
       }
 
-      const parser = new DOMParser();
-      const searchDocument = parser.parseFromString(searchContent, "text/html");
-      parsedSearchContent.value = searchDocument;
+      const searchResults = document.getElementById("docSearchResults")!;
+      searchResults.innerHTML = searchContent;
 
-      const searchItems = [];
-      for (const searchItem of searchDocument.getElementsByClassName("namespaceItem")) {
-        const description = searchItem.getElementsByClassName("markdown_summary")[0];
-        searchItems.push({
-          name: searchItem.dataset.name,
-          description: description?.innerText ?? "",
-          HTMLDescription: description?.innerHTML ?? "",
+      const searchItems: SearchItem[] = Array.from(
+        searchResults
+          .getElementsByClassName("namespaceItem") as HTMLCollectionOf<
+            HTMLElement
+          >,
+      )
+        .map((searchItem) => {
+          const name =
+            (searchItem.getElementsByClassName("namespaceItemContent")[0]
+              .children[0] as HTMLAnchorElement).title;
+          const description = searchItem.getElementsByClassName(
+            "markdown_summary",
+          )[0] as HTMLElement | undefined;
+          searchItem.style.setProperty("display", "none");
+          const section = searchItem.parentElement!.parentElement!;
+          section.hidden = true;
+          return {
+            name,
+            description: description?.innerText.replaceAll("\n", " ") ?? "",
+            node: searchItem,
+            section: section,
+          };
         });
-      }
 
       await insertMultiple(oramaDb, searchItems);
       db.value = oramaDb;
     })();
   }, []);
-  const showResults = useSignal(false);
 
   useEffect(() => {
     const keyboardHandler = (e: KeyboardEvent) => {
@@ -114,89 +136,139 @@ export function LocalSymbolSearch(
     };
   });
 
+  const previousResultNodes = useRef<HTMLElement[]>([]);
+  const previousSections = useRef<Set<HTMLElement>>(new Set());
+
   async function onInput(e: JSX.TargetedEvent<HTMLInputElement>) {
     if (e.currentTarget.value) {
       const term = e.currentTarget.value;
       const searchResult = await search(db.value!, {
         term,
         properties: ["name", "description"],
-        threshold: 0.4,
+        threshold: 0.2,
+        limit: 50,
       });
-      selectionIdx.value = -1;
 
-      const doc = parsedSearchContent.value;
-      for (const entrypoints of doc.getElementsByClassName("section")) {
-        const items = entrypoints.getElementsByClassName("namespaceItem");
+      for (const node of previousResultNodes.current) {
+        node.style.setProperty("display", "none");
+        node.querySelectorAll("mark.orama-highlight").forEach((el) => {
+          el.replaceWith(...el.childNodes);
+        });
+        node.normalize();
+      }
+      previousResultNodes.current = [];
 
-        let hiddenItems = 0;
-        for (const searchItem of entrypoints.getElementsByClassName("namespaceItem")) {
-          const titleElement = searchItem.getElementsByClassName("namespaceItemContent")[0].children[0];
-          const description = searchItem.getElementsByClassName("markdown_summary")[0];
-          const result = searchResult.hits.find(hit => hit.document.name == titleElement.title);
+      for (const section of previousSections.current) {
+        section.hidden = true;
+      }
+      previousSections.current.clear();
 
-          if (result) {
-            searchItem.style.removeProperty("display");
-            titleElement.innerHTML = highlighter.highlight(titleElement.title, term).HTML;
+      for (const hit of searchResult.hits) {
+        const doc = hit.document as unknown as SearchItem;
 
-            if (description) {
-              const positions = highlighter.highlight(result.document.description, term).positions;
-              description.innerHTML = result.document.HTMLDescription;
+        doc.section.hidden = false;
+        previousSections.current.add(doc.section);
 
-              if (positions.length) {
-                const walker = doc.createTreeWalker(description, NodeFilter.SHOW_TEXT);
-                let currentPosition = 0;
-                while (walker.nextNode() && positions.length) {
-                  const textContent = walker.currentNode.textContent;
+        doc.node.style.removeProperty("display");
+        previousResultNodes.current.push(doc.node);
 
-                  for (const position of positions) {
-                    const computedStart = position.start - currentPosition;
-                    const computedEnd = position.end - currentPosition;
-                    currentPosition += textContent.length;
+        const titleElement = doc.node.getElementsByClassName(
+          "namespaceItemContent",
+        )[0]
+          .children[0] as HTMLAnchorElement;
+        titleElement.innerHTML =
+          highlighter.highlight(titleElement.title, term).HTML;
 
-                    // whole highlight is in a single node
-                    if (computedStart > 0 && computedEnd < textContent.length) {
-                      const before = textContent.slice(0, computedStart);
-                      const highlightedSection = textContent.slice(computedStart, computedEnd + 1);
-                      const after = textContent.slice(computedEnd + 1);
+        const description = doc.node.getElementsByClassName(
+          "markdown_summary",
+        )[0] as HTMLElement;
 
-                      walker.currentNode.replaceWith(document.createRange().createContextualFragment(`${before}<mark class="orama-highlight">${highlightedSection}</mark>${after}`));
+        if (description) {
+          const positions =
+            highlighter.highlight(doc.description, term).positions;
 
-                      positions.shift();
-                    } else if (computedStart > 0) {
-                      // only start is in this node
-                      const before = textContent.slice(0, computedStart);
-                      const highlightedSection = textContent.slice(computedStart);
-                      walker.currentNode.replaceWith(document.createRange().createContextualFragment(`${before}<mark class="orama-highlight">${highlightedSection}</mark>`));
+          if (positions.length > 0) {
+            const walker = document.createTreeWalker(
+              description,
+              NodeFilter.SHOW_TEXT,
+            );
 
-                      // since only the start of the highlight is in this node, there cannot be more highlights for this node
-                      break;
-                    } else if (computedEnd < textContent.length) {
-                      // only end is in this node
-                      const highlightedSection = textContent.slice(0, computedEnd + 1);
-                      const after = textContent.slice(computedEnd + 1);
-                      walker.currentNode.replaceWith(document.createRange().createContextualFragment(`<mark class="orama-highlight">${highlightedSection}</mark>${after}`));
+            let currentPosition = 0;
+            let node = walker.nextNode();
+            while (node && positions.length) {
+              const currentNode = walker.currentNode as Text;
+              const textContent = currentNode.textContent!;
+              const length = textContent.length;
 
-                      positions.shift();
-                    } else {
-                      break;
-                    }
-                  }
+              const fragments = [];
+              let start = 0;
+
+              positionsLoop: for (let i = 0; i < positions.length; i++) {
+                const position = positions[i];
+                const localStart = position.start - currentPosition;
+                const localEnd = position.end - currentPosition;
+
+                if (localStart >= length) {
+                  // if the start is after the current node, there cannot be more highlights for this node
+                  break positionsLoop;
+                }
+
+                if ((localStart >= 0) && (localEnd < length)) {
+                  fragments.push(
+                    textContent.slice(start, localStart),
+                    textContent.slice(localStart, localEnd + 1),
+                  );
+                  start = localEnd + 1;
+                  positions.shift();
+                  i--; // we need to recheck the current position
+                } else if (localStart >= 0) {
+                  fragments.push(
+                    textContent.slice(start, localStart),
+                    textContent.slice(localStart),
+                  );
+                  start = length;
+                  // if the end is not in this node, there cannot be more highlights for this node
+                  break positionsLoop;
+                } else if (localEnd < length) {
+                  fragments.push(
+                    "",
+                    textContent.slice(start, localEnd + 1),
+                  );
+                  start = localEnd + 1;
+                  positions.shift();
+                  i--; // we need to recheck the current position
+                } else {
+                  break positionsLoop;
                 }
               }
+
+              if (start !== length) {
+                fragments.push(textContent.slice(start));
+              }
+
+              currentPosition += length;
+
+              node = walker.nextNode();
+              if (fragments.length > 1) {
+                currentNode.replaceWith(
+                  document.createRange().createContextualFragment(
+                    fragments
+                      .map((fragment, i) =>
+                        i % 2 === 0
+                          ? fragment
+                          : fragment !== ""
+                          ? `<mark class="orama-highlight">${fragment}</mark>`
+                          : ""
+                      )
+                      .join(""),
+                  ),
+                );
+              }
             }
-          } else {
-            hiddenItems++;
-            searchItem.style.setProperty("display", "none");
           }
         }
-
-        if (hiddenItems == items.length) {
-          entrypoints.style.setProperty("display", "none");
-        } else {
-          entrypoints.style.removeProperty("display");
-        }
       }
-      parsedSearchContent.value = doc;
+
       searchCounter.value++;
       showResults.value = true;
     } else {
@@ -204,41 +276,13 @@ export function LocalSymbolSearch(
     }
   }
 
-  function onKeyUp(e: KeyboardEvent) {
-    /*if (e.key === "ArrowDown") {
-      selectionIdx.value = Math.min(
-        results.value.length - 1,
-        selectionIdx.value + 1,
-      );
-    } else if (e.key === "ArrowUp") {
-      selectionIdx.value = Math.max(0, selectionIdx.value - 1);
-    } else if (e.key === "Enter") {
-      if (selectionIdx.value > -1) {
-        if (item !== undefined) {
-          e.preventDefault();
-          location.href = `/@${props.scope}/${props.pkg}${
-            props.version ? `@${props.version}` : ""
-          }/doc${item.file === "." ? "" : item.file}/~/${item.name}`;
-        }
-      }
-    }*/
-  }
-
   if (IS_BROWSER) {
-    if (showResults.value) {
-      const value = parsedSearchContent.value?.documentElement?.innerHTML ?? props.content;
-
-      if (value) {
-        document.getElementById("docMain").classList.add("hidden");
-        document.getElementById("docSearchResults").classList.remove("hidden");
-        document.getElementById("docSearchResults").innerHTML = value;
-      } else {
-        document.getElementById("docMain").classList.remove("hidden");
-        document.getElementById("docSearchResults").classList.add("hidden");
-      }
+    if (showResults.value && searchCounter.value) {
+      document.getElementById("docMain")!.classList.add("hidden");
+      document.getElementById("docSearchResults")!.classList.remove("hidden");
     } else {
-      document.getElementById("docMain").classList.remove("hidden");
-      document.getElementById("docSearchResults").classList.add("hidden");
+      document.getElementById("docMain")!.classList.remove("hidden");
+      document.getElementById("docSearchResults")!.classList.add("hidden");
     }
   }
 
@@ -246,15 +290,14 @@ export function LocalSymbolSearch(
     macLike !== undefined ? ` (${macLike ? "⌘/" : "Ctrl+/"})` : ""
   }`;
   return (
-    <div class="flex-none" name={searchCounter.value}>
+    <div class="flex-none">
       <input
         type="text"
         placeholder={placeholder}
         id="symbol-search-input"
         class="block text-sm w-full py-1.5 px-2 input-container input bg-white border-1.5 border-jsr-cyan-900/30"
-        disabled={!db}
+        disabled={!db.value}
         onInput={onInput}
-        onKeyUp={onKeyUp}
       />
     </div>
   );

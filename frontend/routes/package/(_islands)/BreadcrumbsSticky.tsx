@@ -53,10 +53,10 @@ export function BreadcrumbsSticky(
 
         <div class="lg:col-[span_1_/_-1]">
           <LocalSymbolSearch
-            content={props.searchContent}
             scope={props.scope}
             pkg={props.package}
             version={props.version}
+            content={props.searchContent}
           />
         </div>
       </div>
